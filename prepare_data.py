@@ -152,6 +152,7 @@ def cmd_download(a):
 
 # =========================== Benign có path ===========================
 def cmd_benign(a):
+    from tranco import Tranco
     RAW.mkdir(parents=True, exist_ok=True)
     saved = RAW / "tranco_top.txt"
     old = saved.read_text().split() if saved.exists() else []
@@ -161,7 +162,6 @@ def cmd_benign(a):
         top = old[: a.top]
         print(f"dùng lại danh sách Tranco đã lưu ({saved})")
     else:
-        from tranco import Tranco
         top = Tranco(cache=True, cache_dir=".tranco").list().top(a.top)
         saved.write_text("\n".join(top))
     vn = [d for d in top if d.endswith(".vn")]
