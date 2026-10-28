@@ -1,0 +1,84 @@
+# Lấy URL benign có path từ Common Crawl (bước "benign" của prepare_data.py).
+# Mỗi lượt chạy tối đa ~5 giờ 20 phút (GitHub giới hạn 6 giờ/lượt), lưu tiến độ vào repo,
+# rồi TỰ chạy lượt tiếp theo cho đến khi xong. Chỉ cần bấm "Run workflow" một lần.
+name: benign-collect
+
+on:
+  workflow_dispatch:
+    inputs:
+      n:
+        description: "Số domain quốc tế (giống --n). Domain .vn luôn được lấy hết."
+        default: "3000"
+
+permissions:
+  contents: write   # commit tiến độ
+  actions: write    # tự kích hoạt lượt tiếp theo
+
+concurrency:
+  group: benign-collect
+  cancel-in-progress: false
+
+env:
+  N: ${{ inputs.n }}
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Cài thư viện
+        run: pip install -r requirements.txt
+
+      - name: Chuyển file tiến độ (nếu upload ở thư mục gốc) vào data/raw
+        run: |
+          mkdir -p data/raw
+          for f in tranco_top.txt benign_cc.csv benign_cc_done.txt; do
+            [ -f "$f" ] || continue
+            if [ -f "data/raw/$f" ]; then
+              echo "data/raw/$f đã có -> bỏ bản $f ở thư mục gốc"; git rm -q "$f"
+            else
+              git mv "$f" "data/raw/$f"; echo "đã chuyển $f -> data/raw/"
+            fi
+          done
+
+      - name: Lấy benign (tối đa 320 phút mỗi lượt)
+        run: |
+          echo "BEFORE=$(cat data/raw/benign_cc_done.txt 2>/dev/null | wc -l)" >> "$GITHUB_ENV"
+          python prepare_data.py benign --n "$N" --max-minutes 320
+          echo "AFTER=$(cat data/raw/benign_cc_done.txt 2>/dev/null | wc -l)" >> "$GITHUB_ENV"
+          echo "REMAINING=$(cat data/raw/benign_cc_remaining.txt)" >> "$GITHUB_ENV"
+
+      - name: Lưu tiến độ vào repo
+        if: always()
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898333+github-actions[bot]@users.noreply.github.com"
+          git add -A data/raw
+          if git diff --cached --quiet; then
+            echo "Không có gì mới để lưu"
+          else
+            git commit -q -m "benign: ${AFTER:-?} domain xong, còn ${REMAINING:-?}"
+            git pull -q --rebase && git push -q   # pull trước: phòng khi bạn sửa repo lúc bot đang chạy
+          fi
+
+      - name: Chưa xong thì tự chạy lượt tiếp
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$REMAINING" = "0" ]; then
+            echo "XONG toàn bộ: tải data/raw/benign_cc.csv về máy"; exit 0
+          fi
+          if [ "$AFTER" -le "$BEFORE" ]; then
+            echo "::error::Lượt này không lấy thêm được domain nào (Common Crawl có thể đang lỗi). Dừng lại; vài giờ sau bấm Run workflow để chạy tiếp."
+            exit 1
+          fi
+          echo "Còn $REMAINING domain -> kích hoạt lượt tiếp theo"
+          gh workflow run benign.yml --ref "${{ github.ref_name }}" -f n="$N"
